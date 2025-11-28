@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+.local
+.vscode/
+.venv/
+local.settings.json
+*.zip
+node_modules/
+
+# Azure Functions build artifacts
+bin/
+obj/
+.swa/

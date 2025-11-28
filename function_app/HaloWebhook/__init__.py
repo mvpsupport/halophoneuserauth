@@ -1,0 +1,167 @@
+import base64
+import json
+import logging
+import os
+from typing import Any, Dict
+
+import azure.functions as func
+import msal
+import requests
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
+from twilio.base.exceptions import TwilioRestException
+from twilio.rest import Client as TwilioClient
+
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+SECRET_CACHE: Dict[str, str] = {}
+
+
+def main(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("Halo webhook received")
+
+    try:
+        payload = req.get_json()
+    except ValueError:
+        return func.HttpResponse("Invalid JSON payload", status_code=400)
+
+    action = (payload.get("action") or "").lower()
+    user_principal_name = payload.get("userPrincipalName")
+    phone_number = payload.get("phoneNumber")
+    verification_code = payload.get("code")
+
+    if not user_principal_name:
+        return func.HttpResponse("userPrincipalName is required", status_code=400)
+
+    try:
+        token = _acquire_graph_token()
+        graph_user = _get_graph_user(token, user_principal_name)
+    except Exception as ex:  # pragma: no cover - defensive logging
+        logging.exception("Graph user validation failed: %s", ex)
+        return func.HttpResponse("Unable to validate user", status_code=502)
+
+    if action == "start":
+        if not phone_number:
+            return func.HttpResponse("phoneNumber is required to start verification", status_code=400)
+        try:
+            _send_verification(phone_number)
+            return func.HttpResponse(
+                json.dumps({"status": "verification_started", "user": graph_user.get("id")}),
+                status_code=202,
+                mimetype="application/json",
+            )
+        except TwilioRestException as tex:  # pragma: no cover - logging only
+            logging.exception("Twilio send failed: %s", tex)
+            return func.HttpResponse("Unable to send verification", status_code=502)
+    elif action == "verify":
+        if not (phone_number and verification_code):
+            return func.HttpResponse(
+                "phoneNumber and code are required for verification",
+                status_code=400,
+            )
+        try:
+            approved = _check_verification(phone_number, verification_code)
+            status = "approved" if approved else "denied"
+            return func.HttpResponse(
+                json.dumps({"status": status, "user": graph_user.get("id")}),
+                status_code=200,
+                mimetype="application/json",
+            )
+        except TwilioRestException as tex:  # pragma: no cover - logging only
+            logging.exception("Twilio verification failed: %s", tex)
+            return func.HttpResponse("Unable to validate code", status_code=502)
+    else:
+        return func.HttpResponse("Unsupported action", status_code=400)
+
+
+def _secret_client() -> SecretClient:
+    vault_name = os.environ.get("KEY_VAULT_NAME")
+    if not vault_name:
+        raise RuntimeError("KEY_VAULT_NAME is not configured")
+    vault_uri = f"https://{vault_name}.vault.azure.net"
+    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    return SecretClient(vault_url=vault_uri, credential=credential)
+
+
+def _get_secret(name: str) -> str:
+    if name in SECRET_CACHE:
+        return SECRET_CACHE[name]
+    client = _secret_client()
+    secret_value = client.get_secret(name).value
+    SECRET_CACHE[name] = secret_value
+    return secret_value
+
+
+def _load_certificate() -> Dict[str, str]:
+    pfx_b64 = _get_secret("graph-cert-pfx")
+    password = _get_secret("graph-cert-password") or None
+
+    pfx_bytes = base64.b64decode(pfx_b64)
+    private_key, cert, _ = load_key_and_certificates(pfx_bytes, password.encode() if password else None)
+    if not private_key or not cert:
+        raise RuntimeError("PFX did not contain a private key and certificate")
+
+    private_key_pem = private_key.private_bytes(
+        encoding=Encoding.PEM,
+        format=PrivateFormat.PKCS8,
+        encryption_algorithm=NoEncryption(),
+    ).decode()
+    thumbprint = cert.fingerprint(hashes.SHA1()).hex()
+    public_certificate = cert.public_bytes(Encoding.PEM).decode()
+
+    return {
+        "private_key": private_key_pem,
+        "thumbprint": thumbprint,
+        "public_certificate": public_certificate,
+    }
+
+
+def _acquire_graph_token() -> str:
+    tenant_id = os.environ.get("GRAPH_TENANT_ID")
+    client_id = os.environ.get("GRAPH_CLIENT_ID")
+    if not (tenant_id and client_id):
+        raise RuntimeError("GRAPH_TENANT_ID and GRAPH_CLIENT_ID must be set")
+
+    certificate = _load_certificate()
+    authority = f"https://login.microsoftonline.com/{tenant_id}"
+    app = msal.ConfidentialClientApplication(
+        client_id=client_id,
+        authority=authority,
+        client_credential=certificate,
+    )
+    result = app.acquire_token_silent(scopes=[GRAPH_SCOPE], account=None)
+    if not result:
+        result = app.acquire_token_for_client(scopes=[GRAPH_SCOPE])
+    if "access_token" not in result:
+        raise RuntimeError(f"Unable to acquire Graph token: {result}")
+    return result["access_token"]
+
+
+def _get_graph_user(token: str, user_principal_name: str) -> Dict[str, Any]:
+    url = f"https://graph.microsoft.com/v1.0/users/{user_principal_name}"
+    params = {"$select": "id,displayName,userPrincipalName,mobilePhone"}
+    response = requests.get(url, params=params, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    if response.status_code != 200:
+        raise RuntimeError(f"Graph responded with {response.status_code}: {response.text}")
+    return response.json()
+
+
+def _twilio_client() -> TwilioClient:
+    account_sid = _get_secret("twilio-account-sid")
+    auth_token = _get_secret("twilio-auth-token")
+    return TwilioClient(account_sid, auth_token)
+
+
+def _send_verification(phone_number: str) -> None:
+    service_sid = _get_secret("twilio-verify-service-sid")
+    client = _twilio_client()
+    client.verify.v2.services(service_sid).verifications.create(to=phone_number, channel="sms")
+
+
+def _check_verification(phone_number: str, code: str) -> bool:
+    service_sid = _get_secret("twilio-verify-service-sid")
+    client = _twilio_client()
+    verification_check = client.verify.v2.services(service_sid).verification_checks.create(to=phone_number, code=code)
+    return verification_check.status == "approved"
