@@ -23,17 +23,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Halo webhook received")
 
     try:
-        payload = req.get_json()
-    except ValueError:
-        return func.HttpResponse("Invalid JSON payload", status_code=400)
-
-    action = (payload.get("action") or "").lower()
-    user_principal_name = payload.get("userPrincipalName")
-    phone_number = payload.get("phoneNumber")
-    verification_code = payload.get("code")
-
-    if not user_principal_name:
-        return func.HttpResponse("userPrincipalName is required", status_code=400)
+        action, user_principal_name, phone_number, verification_code = _parse_payload(req)
+    except ValueError as exc:
+        return func.HttpResponse(str(exc), status_code=400)
 
     try:
         token = _acquire_graph_token()
@@ -43,8 +35,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Unable to validate user", status_code=502)
 
     if action == "start":
-        if not phone_number:
-            return func.HttpResponse("phoneNumber is required to start verification", status_code=400)
         try:
             _send_verification(phone_number)
             return func.HttpResponse(
@@ -165,3 +155,35 @@ def _check_verification(phone_number: str, code: str) -> bool:
     client = _twilio_client()
     verification_check = client.verify.v2.services(service_sid).verification_checks.create(to=phone_number, code=code)
     return verification_check.status == "approved"
+
+
+def _parse_payload(req: func.HttpRequest) -> tuple[str, str, str, str | None]:
+    try:
+        payload = req.get_json()
+    except ValueError:
+        raise ValueError("Invalid JSON payload")
+
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object")
+
+    action = _require_string(payload.get("action"), "action").lower()
+    if action not in {"start", "verify"}:
+        raise ValueError("action must be either 'start' or 'verify'")
+
+    user_principal_name = _require_string(payload.get("userPrincipalName"), "userPrincipalName")
+    phone_number = _require_string(payload.get("phoneNumber"), "phoneNumber") if action in {"start", "verify"} else ""
+    verification_code = None
+
+    if action == "verify":
+        verification_code = _require_string(payload.get("code"), "code")
+
+    return action, user_principal_name, phone_number, verification_code
+
+
+def _require_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field_name} is required")
+    return value
