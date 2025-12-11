@@ -15,8 +15,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from cryptography.hazmat.primitives.serialization.pkcs12 import load_key_and_certificates
 from ringcentral import SDK as RingCentralSDK
-from twilio.base.exceptions import TwilioRestException
-from twilio.rest import Client as TwilioClient
 
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 SECRET_CACHE: Dict[str, str] = {}
@@ -38,18 +36,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logging.exception("Graph user validation failed: %s", ex)
         return func.HttpResponse("Unable to validate user", status_code=502)
 
-    provider = _sms_provider()
-
     if action == "start":
         try:
-            _send_verification(phone_number, provider)
+            _send_ringcentral_verification(phone_number)
             return func.HttpResponse(
                 json.dumps({"status": "verification_started", "user": graph_user.get("id")}),
                 status_code=202,
                 mimetype="application/json",
             )
-        except (TwilioRestException, Exception) as tex:  # pragma: no cover - logging only
-            logging.exception("SMS send failed: %s", tex)
+        except Exception as ex:  # pragma: no cover - logging only
+            logging.exception("SMS send failed: %s", ex)
             return func.HttpResponse("Unable to send verification", status_code=502)
     elif action == "verify":
         if not (phone_number and verification_code):
@@ -58,15 +54,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
         try:
-            approved = _check_verification(phone_number, verification_code, provider)
+            approved = _check_ringcentral_verification(phone_number, verification_code)
             status = "approved" if approved else "denied"
             return func.HttpResponse(
                 json.dumps({"status": status, "user": graph_user.get("id")}),
                 status_code=200,
                 mimetype="application/json",
             )
-        except (TwilioRestException, Exception) as tex:  # pragma: no cover - logging only
-            logging.exception("Verification failed: %s", tex)
+        except Exception as ex:  # pragma: no cover - logging only
+            logging.exception("Verification failed: %s", ex)
             return func.HttpResponse("Unable to validate code", status_code=502)
     else:
         return func.HttpResponse("Unsupported action", status_code=400)
@@ -142,45 +138,6 @@ def _get_graph_user(token: str, user_principal_name: str) -> Dict[str, Any]:
     if response.status_code != 200:
         raise RuntimeError(f"Graph responded with {response.status_code}: {response.text}")
     return response.json()
-
-
-def _twilio_client() -> TwilioClient:
-    account_sid = _get_secret("twilio-account-sid")
-    auth_token = _get_secret("twilio-auth-token")
-    return TwilioClient(account_sid, auth_token)
-
-
-def _sms_provider() -> str:
-    provider = os.environ.get("SMS_PROVIDER", "twilio").lower()
-    if provider not in {"twilio", "ringcentral"}:
-        raise RuntimeError("SMS_PROVIDER must be either 'twilio' or 'ringcentral'")
-    return provider
-
-
-def _send_verification(phone_number: str, provider: str) -> None:
-    if provider == "twilio":
-        _send_twilio_verification(phone_number)
-        return
-    _send_ringcentral_verification(phone_number)
-
-
-def _send_twilio_verification(phone_number: str) -> None:
-    service_sid = _get_secret("twilio-verify-service-sid")
-    client = _twilio_client()
-    client.verify.v2.services(service_sid).verifications.create(to=phone_number, channel="sms")
-
-
-def _check_verification(phone_number: str, code: str, provider: str) -> bool:
-    if provider == "twilio":
-        return _check_twilio_verification(phone_number, code)
-    return _check_ringcentral_verification(phone_number, code)
-
-
-def _check_twilio_verification(phone_number: str, code: str) -> bool:
-    service_sid = _get_secret("twilio-verify-service-sid")
-    client = _twilio_client()
-    verification_check = client.verify.v2.services(service_sid).verification_checks.create(to=phone_number, code=code)
-    return verification_check.status == "approved"
 
 
 def _ringcentral_client() -> RingCentralSDK:

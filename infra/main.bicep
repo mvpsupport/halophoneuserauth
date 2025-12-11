@@ -18,17 +18,20 @@ param graphCertPfx string
 @secure()
 param graphCertPassword string
 
-@description('Twilio Account SID.')
+@description('RingCentral Client ID.')
 @secure()
-param twilioAccountSid string
+param ringCentralClientId string
 
-@description('Twilio Auth Token.')
+@description('RingCentral Client Secret.')
 @secure()
-param twilioAuthToken string
+param ringCentralClientSecret string
 
-@description('Twilio Verify service SID.')
+@description('RingCentral JWT token.')
 @secure()
-param twilioVerifyServiceSid string
+param ringCentralJwt string
+
+@description('RingCentral sender phone number.')
+param ringCentralFromNumber string
 
 var storageAccountName = toLower('${baseName}sa${uniqueString(resourceGroup().id)}')
 var functionAppName = toLower('${baseName}-fn')
@@ -108,30 +111,40 @@ resource graphPfxPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' =
   ]
 }
 
-resource twilioAccountSidSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
-  name: '${keyVault.name}/twilio-account-sid'
+resource ringCentralClientIdSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  name: '${keyVault.name}/ringcentral-client-id'
   properties: {
-    value: twilioAccountSid
+    value: ringCentralClientId
   }
   dependsOn: [
     keyVault
   ]
 }
 
-resource twilioAuthTokenSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
-  name: '${keyVault.name}/twilio-auth-token'
+resource ringCentralClientSecretSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  name: '${keyVault.name}/ringcentral-client-secret'
   properties: {
-    value: twilioAuthToken
+    value: ringCentralClientSecret
   }
   dependsOn: [
     keyVault
   ]
 }
 
-resource twilioVerifySidSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
-  name: '${keyVault.name}/twilio-verify-service-sid'
+resource ringCentralJwtSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  name: '${keyVault.name}/ringcentral-jwt'
   properties: {
-    value: twilioVerifyServiceSid
+    value: ringCentralJwt
+  }
+  dependsOn: [
+    keyVault
+  ]
+}
+
+resource ringCentralFromNumberSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  name: '${keyVault.name}/ringcentral-from-number'
+  properties: {
+    value: ringCentralFromNumber
   }
   dependsOn: [
     keyVault

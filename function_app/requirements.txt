@@ -4,5 +4,5 @@ azure-keyvault-secrets==4.8.0
 msal==1.28.0
 requests==2.32.3
 cryptography==42.0.8
-twilio==9.2.3
-ringcentral==0.7.2
+ringcentral==0.7.3
+python-dateutil==2.8.2

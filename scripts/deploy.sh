@@ -11,9 +11,9 @@ RESOURCE_GROUP=${RESOURCE_GROUP:-halo-auth-rg}
 LOCATION=${LOCATION:-eastus}
 DEPLOYMENT_NAME=${DEPLOYMENT_NAME:-halo-deploy-$(date +%s)}
 
-if [[ -z "${GRAPH_TENANT_ID:-}" || -z "${GRAPH_CLIENT_ID:-}" || -z "${GRAPH_CERT_PFX:-}" || -z "${GRAPH_CERT_PASSWORD:-}" || -z "${TWILIO_ACCOUNT_SID:-}" || -z "${TWILIO_AUTH_TOKEN:-}" || -z "${TWILIO_VERIFY_SID:-}" ]]; then
+if [[ -z "${GRAPH_TENANT_ID:-}" || -z "${GRAPH_CLIENT_ID:-}" || -z "${GRAPH_CERT_PFX:-}" || -z "${GRAPH_CERT_PASSWORD:-}" || -z "${RINGCENTRAL_CLIENT_ID:-}" || -z "${RINGCENTRAL_CLIENT_SECRET:-}" || -z "${RINGCENTRAL_JWT:-}" || -z "${RINGCENTRAL_FROM_NUMBER:-}" ]]; then
   echo "Required environment variables are missing." >&2
-  echo "Set GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CERT_PFX (base64), GRAPH_CERT_PASSWORD, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SID." >&2
+  echo "Set GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CERT_PFX (base64), GRAPH_CERT_PASSWORD, RINGCENTRAL_CLIENT_ID, RINGCENTRAL_CLIENT_SECRET, RINGCENTRAL_JWT, RINGCENTRAL_FROM_NUMBER." >&2
   exit 1
 fi
 
@@ -28,9 +28,10 @@ az deployment group create \
                graphClientId="$GRAPH_CLIENT_ID" \
                graphCertPfx="$GRAPH_CERT_PFX" \
                graphCertPassword="$GRAPH_CERT_PASSWORD" \
-               twilioAccountSid="$TWILIO_ACCOUNT_SID" \
-               twilioAuthToken="$TWILIO_AUTH_TOKEN" \
-               twilioVerifyServiceSid="$TWILIO_VERIFY_SID"
+               ringCentralClientId="$RINGCENTRAL_CLIENT_ID" \
+               ringCentralClientSecret="$RINGCENTRAL_CLIENT_SECRET" \
+               ringCentralJwt="$RINGCENTRAL_JWT" \
+               ringCentralFromNumber="$RINGCENTRAL_FROM_NUMBER"
 
 FUNCTION_APP_NAME=$(az deployment group show --resource-group "$RESOURCE_GROUP" --name "$DEPLOYMENT_NAME" --query "properties.outputs.functionAppName.value" -o tsv)
 
