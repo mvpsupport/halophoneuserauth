@@ -1,19 +1,19 @@
 # Halo Phone User Auth
 
-This project deploys an Azure Function App that receives HaloPSA webhooks, validates Halo users against Microsoft Graph using certificate-based authentication, and sends or checks SMS verification codes through Twilio Verify. Infrastructure is delivered with Bicep and backed by Azure Key Vault for secret storage. A RingCentral SMS option is also available for environments that prefer that provider.
+This project deploys an Azure Function App that receives HaloPSA webhooks, validates Halo users against Microsoft Graph using certificate-based authentication, and sends or checks SMS verification codes through RingCentral. Infrastructure is delivered with Bicep and backed by Azure Key Vault for secret storage. A RingCentral call webhook is also provided so the RingCentral Embeddable widget can surface inbound/outbound call events inside Halo PSA while SMS validation remains available via the webhook.
 
 ## Solution overview
-- **HaloPSA webhook endpoint**: HTTP-triggered Azure Function at `/api/halo/webhook` that accepts JSON payloads with `action` (`start` or `verify`), `userPrincipalName`, `phoneNumber`, and optional `code`.
-- **Microsoft Graph validation**: Acquires an app-only access token with a client certificate (stored as a Key Vault secret) to confirm the user exists and retrieve their identifiers before any Twilio call.
-- **Twilio verification**: Uses Twilio Verify to send SMS codes (`action: start`) and to validate submitted codes (`action: verify`).
-- **RingCentral SMS option**: When `SMS_PROVIDER=ringcentral`, generates codes in the function, sends them through RingCentral SMS, and validates against an in-memory cache with a configurable expiration.
-- **Secrets in Key Vault**: The Function App runs with a system-assigned managed identity that can read Key Vault secrets for Graph and Twilio credentials.
+- **HaloPSA webhook endpoint**: HTTP-triggered Azure Function at `/api/halo/webhook` that accepts JSON payloads with `action` (`start` or `verify`), `userPrincipalName`, `phoneNumber`, and optional `code`. SMS is dispatched through RingCentral for both sending and validation.
+- **Microsoft Graph validation**: Acquires an app-only access token with a client certificate (stored as a Key Vault secret) to confirm the user exists and retrieve their identifiers before any SMS call.
+- **RingCentral SMS verification**: Generates codes in the function, sends them through RingCentral SMS, and validates against a code table in Azure Storage to survive cold starts and scale-out.
+- **RingCentral call webhook**: `/api/ringcentral/incoming-call` accepts POST payloads from the RingCentral Embeddable widget and logs/acknowledges call events so Halo PSA can receive call context.
+- **Secrets in Key Vault**: The Function App runs with a system-assigned managed identity that can read Key Vault secrets for Graph and SMS credentials.
 
 ## Repository structure
 - `function_app/` – Azure Functions Python app and dependencies.
   - `HaloWebhook/` – HTTP trigger implementation for HaloPSA webhooks.
   - `requirements.txt` – Runtime dependencies.
-- `infra/main.bicep` – Deploys the Function App, Consumption plan, Storage Account, Application Insights, Key Vault, and Graph/Twilio secrets.
+- `infra/main.bicep` – Deploys the Function App, Consumption plan, Storage Account, Application Insights, Key Vault, and Graph/RingCentral secrets.
 - `scripts/deploy.sh` – Example Azure CLI script to deploy the infrastructure and publish the function code.
 
 ## Configuration
@@ -24,9 +24,9 @@ Environment variables expected by the function runtime:
 | `KEY_VAULT_NAME` | Name of the Key Vault containing secrets. Set automatically by the Bicep template. |
 | `GRAPH_TENANT_ID` | Azure AD tenant ID for Microsoft Graph. |
 | `GRAPH_CLIENT_ID` | Application (client) ID used for the certificate credential. |
-| `SMS_PROVIDER` | `twilio` (default) or `ringcentral` to select the SMS backend. |
 | `RINGCENTRAL_SERVER_URL` | Optional RingCentral platform URL override (defaults to production). |
 | `RINGCENTRAL_CODE_TTL_MINUTES` | Optional expiration in minutes for RingCentral codes (defaults to `10`). |
+| `RINGCENTRAL_CODE_TABLE` | Optional Azure Table name for RingCentral verification codes (defaults to `RingCentralCodes`). |
 
 Key Vault secrets populated by the Bicep template:
 
@@ -34,9 +34,6 @@ Key Vault secrets populated by the Bicep template:
 | --- | --- |
 | `graph-cert-pfx` | Base64-encoded PFX file containing the Graph app certificate. |
 | `graph-cert-password` | Password for the PFX (empty string if none). |
-| `twilio-account-sid` | Twilio Account SID used by the Verify service. |
-| `twilio-auth-token` | Twilio Auth Token for API requests. |
-| `twilio-verify-service-sid` | Verify service SID used for sending/checking codes. |
 | `ringcentral-client-id` | RingCentral application client ID. |
 | `ringcentral-client-secret` | RingCentral application client secret. |
 | `ringcentral-jwt` | RingCentral JWT used for authenticating the platform session. |
@@ -52,11 +49,11 @@ export GRAPH_TENANT_ID=<tenant-id>
 export GRAPH_CLIENT_ID=<client-id>
 export GRAPH_CERT_PFX=$(base64 -w 0 path/to/certificate.pfx)
 export GRAPH_CERT_PASSWORD=<pfx-password>
-export TWILIO_ACCOUNT_SID=<sid>
-export TWILIO_AUTH_TOKEN=<auth-token>
-export TWILIO_VERIFY_SID=<verify-sid>
+export RINGCENTRAL_CLIENT_ID=<client-id>
+export RINGCENTRAL_CLIENT_SECRET=<client-secret>
+export RINGCENTRAL_JWT=<jwt>
+export RINGCENTRAL_FROM_NUMBER=<sender-number>
 # Optional RingCentral deployment settings
-export SMS_PROVIDER=ringcentral
 export RINGCENTRAL_SERVER_URL=https://platform.ringcentral.com
 export RINGCENTRAL_CODE_TTL_MINUTES=10
 ```
